@@ -1,23 +1,32 @@
 import operator
 import logging
 from collections import namedtuple
+from contextlib import contextmanager
 
 from django.http import HttpResponse
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_GET, require_POST
 from django.conf import settings
 
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql.expression import asc, desc, and_, or_
+from sqlalchemy.sql.expression import asc, desc, and_, or_, literal
 
-from specifyweb.specify.api import toJson
+from specifyweb.specify.api import json, toJson, create_obj, obj_to_data, HttpResponseCreated
 from specifyweb.specify.views import login_required
 from . import models
 
 from .fieldspec import FieldSpec
 
 logger = logging.getLogger(__name__)
-Session = sessionmaker(bind=sqlalchemy.create_engine(settings.SA_DATABASE_URL))
+
+SESSION_MAKER = sessionmaker(bind=sqlalchemy.create_engine(settings.SA_DATABASE_URL))
+@contextmanager
+def get_session():
+    session = SESSION_MAKER()
+    try:
+        yield session
+    finally:
+        session.close()
 
 SORT_TYPES = [None, asc, desc]
 SORT_OPS = [None, operator.gt, operator.lt]
@@ -77,34 +86,59 @@ def query(request, id):
     limit = int(request.GET.get('limit', 20))
     offset = int(request.GET.get('offset', 0))
 
-    session = Session()
-    sp_query = session.query(models.SpQuery).get(int(id))
-    field_specs = [FieldSpec.from_spqueryfield(field, value_from_request(field, request.GET))
-                   for field in sorted(sp_query.fields, key=lambda field: field.position)]
-    model = models.models_by_tableid[sp_query.contextTableId]
-    id_field = getattr(model, model._id)
-    query = session.query(id_field)
-    query = filter_by_collection(model, query, request.specify_collection)
+    with get_session() as session:
+        sp_query = session.query(models.SpQuery).get(int(id))
+        field_specs = [FieldSpec.from_spqueryfield(field, value_from_request(field, request.GET))
+                       for field in sorted(sp_query.fields, key=lambda field: field.position)]
+        model = models.models_by_tableid[sp_query.contextTableId]
+        id_field = getattr(model, model._id)
+        query = session.query(id_field)
+        query = filter_by_collection(model, query, request.specify_collection)
 
-    headers = ['id']
-    order_by_exprs = []
-    for fs in field_specs:
-        query, field = fs.add_to_query(query,
-                                       collection=request.specify_collection)
-        if fs.display:
-            query = query.add_columns(field)
-            headers.append(fs.spqueryfieldid)
-        sort_type = SORT_TYPES[fs.sort_type]
-        if sort_type is not None:
-            order_by_exprs.append(sort_type(field))
-    count = query.distinct().count()
-    query = query.order_by(*order_by_exprs).distinct().limit(limit).offset(offset)
+        headers = ['id']
+        order_by_exprs = []
+        for fs in field_specs:
+            query, field = fs.add_to_query(query, collection=request.specify_collection)
+            if fs.display:
+                query = query.add_columns(field)
+                headers.append(fs.spqueryfieldid)
+            sort_type = SORT_TYPES[fs.sort_type]
+            if sort_type is not None:
+                order_by_exprs.append(sort_type(field))
+        query = query.distinct()
+        count = query.count()
+        query = query.order_by(*order_by_exprs).limit(limit).offset(offset)
 
-    results = {
-        'columns': headers,
-        'results': list(query),
-        'count': count
-    }
-    session.close()
+        results = {
+            'columns': headers,
+            'results': list(query),
+            'count': count
+        }
+
     return HttpResponse(toJson(results), content_type='application/json')
 
+@require_POST
+@login_required
+def make_record_set(request, id):
+    data = json.load(request)
+
+    with get_session() as session:
+        sp_query = session.query(models.SpQuery).get(int(query_id))
+        data['tableid'] = sp_query.contextTableId
+        rs = create_obj(request.specify_collection, request.specify_user_agent, 'recordset', data)
+
+        field_specs = [FieldSpec.from_spqueryfield(field, value_from_request(field, request.GET))
+                       for field in sorted(sp_query.fields, key=lambda field: field.position)]
+        model = models.models_by_tableid[sp_query.contextTableId]
+        id_field = getattr(model, model._id)
+        query = session.query(literal(rs.id), id_field)
+        query = filter_by_collection(model, query, request.specify_collection)
+
+        for fs in field_specs:
+            query, field = fs.add_to_query(query, collection=request.specify_collection)
+        query = query.distinct()
+
+        ins = models.RecordSetItem.insert().from_select(['RecordSetID', 'RecordID'], query)
+        ins.execute()
+
+    return HttpResponseCreated(toJson(obj_to_data(rs)), content_type='application/json')

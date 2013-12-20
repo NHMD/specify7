@@ -75,6 +75,7 @@ define([
         __name__: "QueryBuilder",
         events: {
             'click .query-execute': 'search',
+            'click .query-to-recordset': 'makeRecordSet',
             'click .field-add': 'addField',
             'click .abandon-changes': function() { this.trigger('redisplay'); }
         },
@@ -132,7 +133,7 @@ define([
             _.each(this.fieldUIs, function(field) { field.contract(); });
         },
         saveRequired: function() {
-            this.$('.query-execute').prop('disabled', true);
+            this.$('.query-execute, .query-to-recordset').prop('disabled', true);
             this.$('.abandon-changes').prop('disabled', false);
         },
         addField: function() {
@@ -157,6 +158,9 @@ define([
                 $('<th>').text(name).prepend($('<img>', {src: icon})).appendTo(header);
             });
             return header;
+        },
+        makeRecordSet: function(evt) {
+
         },
         search: function(evt) {
             var self = this;
