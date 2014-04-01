@@ -1,10 +1,11 @@
 define([
     'jquery', 'underscore', 'backbone', 'schema', 'queryfield', 'templates',
-    'fieldformat', 'dataobjformatters',
-    'savebutton', 'whenall', 'scrollresults',
+    'fieldformat', 'dataobjformatters', 'specifyform', 'populateform',
+    'savebutton', 'whenall', 'scrollresults', 'navigation',
     'jquery-bbq', 'jquery-ui'
 ], function($, _, Backbone, schema, QueryFieldUI, templates,
-            fieldformat, dataobjformatters, SaveButton, whenAll, ScrollResults) {
+            fieldformat, dataobjformatters, specifyform, populateform,
+            SaveButton, whenAll, ScrollResults, navigation) {
     "use strict";
     var objformat = dataobjformatters.format, aggregate = dataobjformatters.aggregate;
 
@@ -160,7 +161,58 @@ define([
             return header;
         },
         makeRecordSet: function(evt) {
+            var queryId = this.query.id;
+            var recordset = new schema.models.RecordSet.Resource();
+            recordset.set('dbtableid', this.model.tableId);
+            recordset.set('name', this.query.get('name'));
+            recordset.set('type', 0);
 
+            function save() {
+                var url = '/stored_query/query/' + queryId + '/make_record_set/';
+                recordset.url = function() { return url; };  // override the api url
+                var dialog = $('<div>').dialog({
+                    modal: true,
+                    close: function() { $(this).remove(); },
+                    width: 'auto',
+                    title: 'Saving...'
+                }).text("Saving query results to new record set.");
+                    
+                recordset.save().done(function() {
+                    dialog.dialog('close');
+                    done();
+                });
+            }
+
+            function done() {
+                 $('<div>').dialog({
+                     modal: true,
+                     close: function() { $(this).remove(); },
+                     width: 'auto',
+                     title: 'Save complete.',
+                     buttons: [
+                         { text: 'Go', click: function() { navigation.go('/specify/recordset/' + recordset.id + '/'); } },
+                         { text: 'Done', click: function() { $(this).dialog('close'); } }
+                     ]
+                }).text("Query results have been saved to a new record set.");
+                    
+            }
+
+            specifyform.buildViewByName('RecordSet').done(function(form) {
+                populateform(form, recordset);
+
+                form.find('.specify-form-header:first').remove();
+
+                $('<div>').dialog({
+                    modal: true,
+                    close: function() { $(this).remove(); },
+                    width: 'auto',
+                    title: 'New ' + recordset.specifyModel.getLocalizedName(),
+                    buttons: [
+                        { text: 'Create', click: function() { $(this).dialog('close'); save(); } },
+                        { text: 'Cancel', click: function() { $(this).dialog('close'); }}
+                    ]
+                }).append(form);
+            });
         },
         search: function(evt) {
             var self = this;

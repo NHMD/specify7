@@ -4,12 +4,13 @@ from collections import namedtuple
 from contextlib import contextmanager
 
 from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 from django.conf import settings
 
 import sqlalchemy
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.sql.expression import asc, desc, and_, or_, literal
+from sqlalchemy.sql.expression import asc, desc, and_, or_, literal, insert
 
 from specifyweb.specify.api import json, toJson, create_obj, obj_to_data, HttpResponseCreated
 from specifyweb.specify.views import login_required
@@ -20,6 +21,7 @@ from .fieldspec import FieldSpec
 logger = logging.getLogger(__name__)
 
 SESSION_MAKER = sessionmaker(bind=sqlalchemy.create_engine(settings.SA_DATABASE_URL))
+
 @contextmanager
 def get_session():
     session = SESSION_MAKER()
@@ -82,7 +84,7 @@ def filter_by_collection(model, query, collection):
 
 @require_GET
 @login_required
-def query(request, id):
+def execute_query(request, id):
     limit = int(request.GET.get('limit', 20))
     offset = int(request.GET.get('offset', 0))
 
@@ -117,17 +119,18 @@ def query(request, id):
 
     return HttpResponse(toJson(results), content_type='application/json')
 
-@require_POST
+#@require_POST
 @login_required
+@csrf_exempt
 def make_record_set(request, id):
     data = json.load(request)
 
     with get_session() as session:
-        sp_query = session.query(models.SpQuery).get(int(query_id))
-        data['tableid'] = sp_query.contextTableId
+        sp_query = session.query(models.SpQuery).get(int(id))
+        data['dbtableid'] = sp_query.contextTableId
         rs = create_obj(request.specify_collection, request.specify_user_agent, 'recordset', data)
 
-        field_specs = [FieldSpec.from_spqueryfield(field, value_from_request(field, request.GET))
+        field_specs = [FieldSpec.from_spqueryfield(field, value_from_request(field, request.POST))
                        for field in sorted(sp_query.fields, key=lambda field: field.position)]
         model = models.models_by_tableid[sp_query.contextTableId]
         id_field = getattr(model, model._id)
@@ -138,7 +141,9 @@ def make_record_set(request, id):
             query, field = fs.add_to_query(query, collection=request.specify_collection)
         query = query.distinct()
 
-        ins = models.RecordSetItem.insert().from_select(['RecordSetID', 'RecordID'], query)
+        ins = insert(models.RecordSetItem, bind=session.connection()) \
+              .from_select((models.RecordSetItem.RecordSetID, models.RecordSetItem.recordId), query)
         ins.execute()
+        session.commit()
 
     return HttpResponseCreated(toJson(obj_to_data(rs)), content_type='application/json')
